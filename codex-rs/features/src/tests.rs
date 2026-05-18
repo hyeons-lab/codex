@@ -151,6 +151,16 @@ fn tool_search_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn secret_auth_storage_defaults_to_windows_only() {
+    assert_eq!(Feature::SecretAuthStorage.stage(), Stage::Stable);
+    assert_eq!(Feature::SecretAuthStorage.default_enabled(), cfg!(windows));
+    assert_eq!(
+        feature_for_key("secret_auth_storage"),
+        Some(Feature::SecretAuthStorage)
+    );
+}
+
+#[test]
 fn unavailable_dummy_tools_is_under_development_and_disabled_by_default() {
     assert_eq!(
         Feature::UnavailableDummyTools.stage(),

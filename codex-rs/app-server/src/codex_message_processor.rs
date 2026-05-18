@@ -287,7 +287,7 @@ use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::auth::login_with_chatgpt_auth_tokens;
 use codex_login::complete_device_code_login;
-use codex_login::login_with_api_key;
+use codex_login::login_with_api_key_with_keyring_backend_kind;
 use codex_login::request_device_code;
 use codex_login::run_login_server;
 use codex_mcp::McpRuntimeEnvironment;
@@ -1270,10 +1270,11 @@ impl CodexMessageProcessor {
             }
         }
 
-        match login_with_api_key(
+        match login_with_api_key_with_keyring_backend_kind(
             &self.config.codex_home,
             &params.api_key,
             self.config.cli_auth_credentials_store_mode,
+            self.config.cli_auth_keyring_backend_kind(),
         ) {
             Ok(()) => {
                 self.auth_manager.reload();
@@ -1342,6 +1343,7 @@ impl CodexMessageProcessor {
                 config.forced_chatgpt_workspace_id.clone(),
                 config.cli_auth_credentials_store_mode,
             )
+            .with_cli_auth_keyring_backend_kind(config.cli_auth_keyring_backend_kind())
         };
         #[cfg(debug_assertions)]
         let opts = {

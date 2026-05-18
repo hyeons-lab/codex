@@ -75,6 +75,8 @@ pub enum Feature {
     GhostCommit,
     /// Enable the default shell tool.
     ShellTool,
+    /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
+    SecretAuthStorage,
 
     // Experimental
     /// Enable JavaScript REPL tools backed by a persistent Node kernel.
@@ -610,6 +612,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "shell_tool",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SecretAuthStorage,
+        key: "secret_auth_storage",
+        stage: Stage::Stable,
+        default_enabled: cfg!(windows),
     },
     FeatureSpec {
         id: Feature::UnifiedExec,

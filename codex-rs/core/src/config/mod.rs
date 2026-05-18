@@ -60,6 +60,7 @@ use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_login::AuthManagerConfig;
+use codex_login::CliAuthKeyringBackendKind;
 use codex_mcp::McpConfig;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -643,6 +644,10 @@ impl AuthManagerConfig for Config {
         self.cli_auth_credentials_store_mode
     }
 
+    fn cli_auth_keyring_backend_kind(&self) -> CliAuthKeyringBackendKind {
+        Config::cli_auth_keyring_backend_kind(self)
+    }
+
     fn forced_chatgpt_workspace_id(&self) -> Option<String> {
         self.forced_chatgpt_workspace_id.clone()
     }
@@ -798,6 +803,16 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    pub fn cli_auth_keyring_backend_kind(&self) -> CliAuthKeyringBackendKind {
+        // TODO: Migrate all keyring-backed CLI auth storage to the secrets
+        // backend after validating this path on Windows.
+        if self.features.enabled(Feature::SecretAuthStorage) {
+            CliAuthKeyringBackendKind::Secrets
+        } else {
+            CliAuthKeyringBackendKind::Direct
+        }
+    }
+
     pub fn to_models_manager_config(&self) -> ModelsManagerConfig {
         ModelsManagerConfig {
             model_context_window: self.model_context_window,

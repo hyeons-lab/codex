@@ -25,7 +25,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::auth::AuthDotJson;
-use crate::auth::save_auth;
+use crate::auth::CliAuthKeyringBackendKind;
+use crate::auth::save_auth_with_keyring_backend_kind;
 use crate::default_client::originator;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
@@ -66,6 +67,7 @@ pub struct ServerOptions {
     pub force_state: Option<String>,
     pub forced_chatgpt_workspace_id: Option<String>,
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
+    pub cli_auth_keyring_backend_kind: CliAuthKeyringBackendKind,
 }
 
 impl ServerOptions {
@@ -85,7 +87,16 @@ impl ServerOptions {
             force_state: None,
             forced_chatgpt_workspace_id,
             cli_auth_credentials_store_mode,
+            cli_auth_keyring_backend_kind: CliAuthKeyringBackendKind::default(),
         }
+    }
+
+    pub fn with_cli_auth_keyring_backend_kind(
+        mut self,
+        cli_auth_keyring_backend_kind: CliAuthKeyringBackendKind,
+    ) -> Self {
+        self.cli_auth_keyring_backend_kind = cli_auth_keyring_backend_kind;
+        self
     }
 }
 
@@ -355,6 +366,7 @@ async fn process_request(
                         tokens.access_token.clone(),
                         tokens.refresh_token.clone(),
                         opts.cli_auth_credentials_store_mode,
+                        opts.cli_auth_keyring_backend_kind,
                     )
                     .await
                     {
@@ -760,6 +772,7 @@ pub(crate) async fn persist_tokens_async(
     access_token: String,
     refresh_token: String,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: CliAuthKeyringBackendKind,
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
@@ -783,7 +796,12 @@ pub(crate) async fn persist_tokens_async(
             last_refresh: Some(Utc::now()),
             agent_identity: None,
         };
-        save_auth(&codex_home, &auth, auth_credentials_store_mode)
+        save_auth_with_keyring_backend_kind(
+            &codex_home,
+            &auth,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+        )
     })
     .await
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?

@@ -28,11 +28,12 @@ use codex_login::token_data::TokenData;
 const DIRECTORY_CONNECTORS_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn apps_enabled(config: &Config) -> bool {
-    let auth_manager = AuthManager::shared(
+    let auth_manager = AuthManager::shared_with_keyring_backend_kind(
         config.codex_home.to_path_buf(),
         /*enable_codex_api_key_env*/ false,
         config.cli_auth_credentials_store_mode,
         Some(config.chatgpt_base_url.clone()),
+        config.cli_auth_keyring_backend_kind(),
     );
     let auth = auth_manager.auth().await;
     config

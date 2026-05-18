@@ -104,6 +104,7 @@ async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .unwrap()
     .unwrap();
@@ -157,6 +158,7 @@ async fn loads_api_key_from_auth_json() {
         dir.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .unwrap()
     .unwrap();
@@ -229,6 +231,7 @@ fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
@@ -245,6 +248,7 @@ fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
         codex_home.path(),
         updated_auth_dot_json,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("updated auth should parse");
 
@@ -545,6 +549,7 @@ async fn build_config(
     AuthConfig {
         codex_home: codex_home.to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+        keyring_backend_kind: CliAuthKeyringBackendKind::Direct,
         forced_login_method,
         forced_chatgpt_workspace_id,
     }
@@ -720,6 +725,7 @@ fn plan_type_maps_known_plan() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
@@ -744,6 +750,7 @@ fn plan_type_maps_self_serve_business_usage_based_plan() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
@@ -771,6 +778,7 @@ fn plan_type_maps_enterprise_cbp_usage_based_plan() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
@@ -798,6 +806,7 @@ fn plan_type_maps_unknown_to_unknown() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
@@ -822,6 +831,7 @@ fn missing_plan_type_maps_to_unknown() {
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
+        CliAuthKeyringBackendKind::Direct,
     )
     .expect("load auth")
     .expect("auth available");
