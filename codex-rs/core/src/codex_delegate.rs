@@ -5,6 +5,7 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_analytics::GuardianApprovalRequestSource;
 use codex_async_utils::OrCancelExt;
+use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -24,6 +25,8 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
+use codex_rmcp_client::ElicitationResponse;
+use rmcp::model::ElicitationAction;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -44,8 +47,12 @@ use crate::mcp_tool_call::lookup_mcp_tool_metadata;
 use crate::session::Codex;
 use crate::session::CodexSpawnArgs;
 use crate::session::CodexSpawnOk;
+use crate::session::GuardianElicitationReview;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::emit_subagent_session_started;
+use crate::session::guardian_mcp_tool_call_request_from_elicitation_meta;
+use crate::session::mcp_elicitation_decline_without_message;
+use crate::session::mcp_elicitation_response_from_guardian_decision;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_login::AuthManager;
@@ -326,6 +333,19 @@ async fn forward_events(
                             &parent_session,
                             &parent_ctx,
                             &pending_mcp_invocations,
+                            event,
+                            &cancel_token,
+                        )
+                        .await;
+                    }
+                    Event {
+                        msg: EventMsg::ElicitationRequest(event),
+                        ..
+                    } => {
+                        handle_elicitation_request(
+                            &codex,
+                            &parent_session,
+                            &parent_ctx,
                             event,
                             &cancel_token,
                         )
@@ -736,6 +756,207 @@ async fn maybe_auto_review_mcp_request_user_input(
     })
 }
 
+async fn handle_elicitation_request(
+    codex: &Codex,
+    parent_session: &Arc<Session>,
+    parent_ctx: &Arc<TurnContext>,
+    event: ElicitationRequestEvent,
+    cancel_token: &CancellationToken,
+) {
+    let child_server_name = event.server_name.clone();
+    let child_request_id = event.id.clone();
+
+    let response = if routes_approval_to_guardian(parent_ctx)
+        && let Some(response) =
+            maybe_auto_review_mcp_elicitation(parent_session, parent_ctx, &event, cancel_token)
+                .await
+    {
+        Some(response)
+    } else {
+        let request_id = delegated_elicitation_parent_request_id(&event.id);
+        let request = match event.request.clone().try_into() {
+            Ok(request) => request,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    server_name = %event.server_name,
+                    request_id = ?event.id,
+                    "failed to parse delegated MCP elicitation request"
+                );
+                let _ = codex
+                    .submit(Op::ResolveElicitation {
+                        server_name: child_server_name,
+                        request_id: child_request_id,
+                        decision: codex_protocol::approvals::ElicitationAction::Cancel,
+                        content: None,
+                        meta: None,
+                    })
+                    .await;
+                return;
+            }
+        };
+        let params = codex_app_server_protocol::McpServerElicitationRequestParams {
+            thread_id: parent_session.conversation_id.to_string(),
+            turn_id: event.turn_id.clone(),
+            server_name: event.server_name.clone(),
+            request,
+        };
+        await_elicitation_with_cancel(
+            parent_session.request_mcp_server_elicitation(parent_ctx, request_id.clone(), params),
+            Some(parent_session),
+            &event.server_name,
+            request_id,
+            cancel_token,
+        )
+        .await
+    };
+
+    let (decision, content, meta) = elicitation_response_to_protocol_parts(response);
+    let _ = codex
+        .submit(Op::ResolveElicitation {
+            server_name: child_server_name,
+            request_id: child_request_id,
+            decision,
+            content,
+            meta,
+        })
+        .await;
+}
+
+async fn maybe_auto_review_mcp_elicitation(
+    parent_session: &Arc<Session>,
+    parent_ctx: &Arc<TurnContext>,
+    event: &ElicitationRequestEvent,
+    cancel_token: &CancellationToken,
+) -> Option<ElicitationResponse> {
+    let guardian_request = match delegated_mcp_elicitation_guardian_review(event)? {
+        GuardianElicitationReview::NotRequested => return None,
+        GuardianElicitationReview::Decline(reason) => {
+            tracing::warn!(
+                server_name = %event.server_name,
+                request_id = ?event.id,
+                reason,
+                "declining delegated Guardian MCP elicitation before review"
+            );
+            return Some(mcp_elicitation_decline_without_message());
+        }
+        GuardianElicitationReview::ApprovalRequest(guardian_request) => *guardian_request,
+    };
+    let review_cancel = cancel_token.child_token();
+    let review_id = new_guardian_review_id();
+    let review_rx = spawn_approval_request_review(
+        Arc::clone(parent_session),
+        Arc::clone(parent_ctx),
+        review_id.clone(),
+        guardian_request,
+        /*retry_reason*/ None,
+        GuardianApprovalRequestSource::DelegatedSubagent,
+        review_cancel.clone(),
+    );
+    let decision = await_approval_with_cancel(
+        async move { review_rx.await.unwrap_or_default() },
+        parent_session,
+        &review_id,
+        cancel_token,
+        Some(&review_cancel),
+    )
+    .await;
+
+    Some(
+        mcp_elicitation_response_from_guardian_decision(
+            parent_session.as_ref(),
+            &review_id,
+            decision,
+        )
+        .await,
+    )
+}
+
+fn delegated_mcp_elicitation_guardian_review(
+    event: &ElicitationRequestEvent,
+) -> Option<GuardianElicitationReview> {
+    let (meta, requested_schema) = match &event.request {
+        codex_protocol::approvals::ElicitationRequest::Form {
+            meta,
+            requested_schema,
+            ..
+        } => (meta, Some(requested_schema)),
+        codex_protocol::approvals::ElicitationRequest::Url { meta, .. } => {
+            let meta = meta.as_ref()?.as_object()?;
+            return if delegated_elicitation_meta_requests_approval(meta) {
+                Some(GuardianElicitationReview::Decline(
+                    "guardian MCP elicitation review only supports form elicitations",
+                ))
+            } else {
+                None
+            };
+        }
+    };
+    let meta = meta.as_ref()?.as_object()?;
+    if requested_schema.is_some_and(delegated_elicitation_schema_has_properties) {
+        return Some(GuardianElicitationReview::Decline(
+            "guardian MCP elicitation review only supports empty form schemas",
+        ));
+    }
+    Some(guardian_mcp_tool_call_request_from_elicitation_meta(
+        &event.server_name,
+        &protocol_request_id_display(&event.id),
+        meta,
+    ))
+}
+
+fn delegated_elicitation_schema_has_properties(schema: &Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| !properties.is_empty())
+}
+
+fn delegated_elicitation_meta_requests_approval(meta: &serde_json::Map<String, Value>) -> bool {
+    meta.get(codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY)
+        .and_then(Value::as_str)
+        == Some(codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST)
+}
+
+fn delegated_elicitation_parent_request_id(
+    child_id: &codex_protocol::mcp::RequestId,
+) -> rmcp::model::RequestId {
+    rmcp::model::NumberOrString::String(std::sync::Arc::from(format!(
+        "delegated:{}:{}",
+        uuid::Uuid::new_v4(),
+        protocol_request_id_display(child_id)
+    )))
+}
+
+fn protocol_request_id_display(id: &codex_protocol::mcp::RequestId) -> String {
+    match id {
+        codex_protocol::mcp::RequestId::String(value) => value.clone(),
+        codex_protocol::mcp::RequestId::Integer(value) => value.to_string(),
+    }
+}
+
+fn elicitation_response_to_protocol_parts(
+    response: Option<ElicitationResponse>,
+) -> (
+    codex_protocol::approvals::ElicitationAction,
+    Option<Value>,
+    Option<Value>,
+) {
+    let Some(response) = response else {
+        return (
+            codex_protocol::approvals::ElicitationAction::Cancel,
+            None,
+            None,
+        );
+    };
+    let decision = match response.action {
+        ElicitationAction::Accept => codex_protocol::approvals::ElicitationAction::Accept,
+        ElicitationAction::Decline => codex_protocol::approvals::ElicitationAction::Decline,
+        ElicitationAction::Cancel => codex_protocol::approvals::ElicitationAction::Cancel,
+    };
+    (decision, response.content, response.meta)
+}
+
 async fn handle_request_permissions(
     codex: &Codex,
     parent_session: &Arc<Session>,
@@ -823,6 +1044,39 @@ where
             scope: PermissionGrantScope::Turn,
             strict_auto_review: false,
         }),
+    }
+}
+
+async fn await_elicitation_with_cancel<F>(
+    fut: F,
+    parent_session: Option<&Session>,
+    server_name: &str,
+    request_id: rmcp::model::RequestId,
+    cancel_token: &CancellationToken,
+) -> Option<ElicitationResponse>
+where
+    F: core::future::Future<Output = Option<ElicitationResponse>>,
+{
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            if let Some(parent_session) = parent_session {
+                let response = ElicitationResponse {
+                    action: ElicitationAction::Cancel,
+                    content: None,
+                    meta: None,
+                };
+                let _ = parent_session
+                    .resolve_elicitation(
+                        server_name.to_string(),
+                        request_id,
+                        response,
+                    )
+                    .await;
+            }
+            None
+        }
+        response = fut => response,
     }
 }
 

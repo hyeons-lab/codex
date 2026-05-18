@@ -28,7 +28,7 @@ const TOOL_SUGGESTION_TOOL_ID_KEY: &str = "tool_id";
 const TOOL_SUGGESTION_TOOL_TYPE_KEY: &str = "tool_type";
 
 #[derive(Debug, PartialEq)]
-enum GuardianElicitationReview {
+pub(crate) enum GuardianElicitationReview {
     NotRequested,
     Decline(&'static str),
     ApprovalRequest(Box<crate::guardian::GuardianApprovalRequest>),
@@ -511,6 +511,24 @@ fn guardian_elicitation_review_request(
     let Some(meta) = meta.as_ref().map(|meta| &meta.0) else {
         return GuardianElicitationReview::NotRequested;
     };
+    if requested_schema.is_some_and(|schema| !schema.properties.is_empty()) {
+        return GuardianElicitationReview::Decline(
+            "guardian MCP elicitation review only supports empty form schemas",
+        );
+    }
+
+    guardian_mcp_tool_call_request_from_elicitation_meta(
+        &request.server_name,
+        &mcp_elicitation_request_id(&request.request_id),
+        meta,
+    )
+}
+
+pub(crate) fn guardian_mcp_tool_call_request_from_elicitation_meta(
+    server_name: &str,
+    request_id: &str,
+    meta: &Map<String, Value>,
+) -> GuardianElicitationReview {
     if metadata_str(meta, MCP_ELICITATION_REQUEST_TYPE_KEY)
         != Some(MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST)
     {
@@ -521,11 +539,6 @@ fn guardian_elicitation_review_request(
     {
         return GuardianElicitationReview::Decline(
             "guardian MCP elicitation metadata must declare mcp_tool_call approval kind",
-        );
-    }
-    if requested_schema.is_some_and(|schema| !schema.properties.is_empty()) {
-        return GuardianElicitationReview::Decline(
-            "guardian MCP elicitation review only supports empty form schemas",
         );
     }
 
@@ -546,12 +559,8 @@ fn guardian_elicitation_review_request(
 
     GuardianElicitationReview::ApprovalRequest(Box::new(
         crate::guardian::GuardianApprovalRequest::McpToolCall {
-            id: format!(
-                "mcp_elicitation:{}:{}",
-                request.server_name,
-                mcp_elicitation_request_id(&request.request_id)
-            ),
-            server: request.server_name.clone(),
+            id: format!("mcp_elicitation:{server_name}:{request_id}"),
+            server: server_name.to_string(),
             tool_name,
             arguments,
             connector_id: metadata_owned_string(meta, MCP_ELICITATION_CONNECTOR_ID_KEY),
@@ -618,7 +627,7 @@ fn mcp_elicitation_request_id(id: &RequestId) -> String {
     }
 }
 
-async fn mcp_elicitation_response_from_guardian_decision(
+pub(crate) async fn mcp_elicitation_response_from_guardian_decision(
     session: &Session,
     review_id: &str,
     decision: ReviewDecision,
@@ -670,7 +679,7 @@ fn mcp_elicitation_decline_with_message(message: String) -> ElicitationResponse 
     }
 }
 
-fn mcp_elicitation_decline_without_message() -> ElicitationResponse {
+pub(crate) fn mcp_elicitation_decline_without_message() -> ElicitationResponse {
     ElicitationResponse {
         action: ElicitationAction::Decline,
         content: None,

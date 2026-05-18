@@ -445,3 +445,263 @@ async fn delegated_mcp_guardian_abort_returns_synthetic_decline_answer() {
         })
     );
 }
+
+#[tokio::test]
+async fn delegated_mcp_elicitation_guardian_abort_resolves_child_request() {
+    let (parent_session, parent_ctx, _rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    let mut parent_ctx = Arc::try_unwrap(parent_ctx).expect("single turn context ref");
+    let mut config = (*parent_ctx.config).clone();
+    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    parent_ctx.config = Arc::new(config);
+    parent_ctx
+        .approval_policy
+        .set(AskForApproval::OnRequest)
+        .expect("set on-request policy");
+    let parent_ctx = Arc::new(parent_ctx);
+
+    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let codex = Codex {
+        tx_sub,
+        rx_event: rx_events,
+        agent_status,
+        session: Arc::clone(&parent_session),
+        session_loop_termination: completed_session_loop_termination(),
+    };
+    let cancel_token = CancellationToken::new();
+    cancel_token.cancel();
+
+    handle_elicitation_request(
+        &codex,
+        &parent_session,
+        &parent_ctx,
+        ElicitationRequestEvent {
+            turn_id: Some("child-turn-1".to_string()),
+            server_name: "code-review-graph".to_string(),
+            id: codex_protocol::mcp::RequestId::String("mcp_tool_call_approval_call-1".to_string()),
+            request: codex_protocol::approvals::ElicitationRequest::Form {
+                meta: Some(serde_json::json!({
+                    codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY:
+                        codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST,
+                    codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY:
+                        codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL,
+                    codex_protocol::mcp_approval_meta::TOOL_NAME_KEY: "detect_changes_tool",
+                    codex_protocol::mcp_approval_meta::TOOL_PARAMS_KEY: {
+                        "repo_root": "/tmp/project"
+                    },
+                })),
+                message: "Approve MCP tool call?".to_string(),
+                requested_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                }),
+            },
+        },
+        &cancel_token,
+    )
+    .await;
+
+    let submission = timeout(Duration::from_secs(2), rx_sub.recv())
+        .await
+        .expect("elicitation response timed out")
+        .expect("elicitation response missing");
+    assert_eq!(
+        submission.op,
+        Op::ResolveElicitation {
+            server_name: "code-review-graph".to_string(),
+            request_id: codex_protocol::mcp::RequestId::String(
+                "mcp_tool_call_approval_call-1".to_string(),
+            ),
+            decision: codex_protocol::approvals::ElicitationAction::Cancel,
+            content: None,
+            meta: Some(serde_json::json!({
+                codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY:
+                    ApprovalsReviewer::AutoReview,
+            })),
+        }
+    );
+}
+
+#[tokio::test]
+async fn delegated_mcp_elicitation_guardian_declines_non_empty_schema() {
+    let (parent_session, parent_ctx, _rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    let mut parent_ctx = Arc::try_unwrap(parent_ctx).expect("single turn context ref");
+    let mut config = (*parent_ctx.config).clone();
+    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    parent_ctx.config = Arc::new(config);
+    parent_ctx
+        .approval_policy
+        .set(AskForApproval::OnRequest)
+        .expect("set on-request policy");
+    let parent_ctx = Arc::new(parent_ctx);
+
+    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let codex = Codex {
+        tx_sub,
+        rx_event: rx_events,
+        agent_status,
+        session: Arc::clone(&parent_session),
+        session_loop_termination: completed_session_loop_termination(),
+    };
+    let child_request_id =
+        codex_protocol::mcp::RequestId::String("mcp_tool_call_approval_call-1".to_string());
+    let cancel_token = CancellationToken::new();
+
+    handle_elicitation_request(
+        &codex,
+        &parent_session,
+        &parent_ctx,
+        ElicitationRequestEvent {
+            turn_id: Some("child-turn-1".to_string()),
+            server_name: "code-review-graph".to_string(),
+            id: child_request_id.clone(),
+            request: codex_protocol::approvals::ElicitationRequest::Form {
+                meta: Some(serde_json::json!({
+                    codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY:
+                        codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST,
+                    codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY:
+                        codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL,
+                    codex_protocol::mcp_approval_meta::TOOL_NAME_KEY: "detect_changes_tool",
+                    codex_protocol::mcp_approval_meta::TOOL_PARAMS_KEY: {
+                        "repo_root": "/tmp/project"
+                    },
+                })),
+                message: "Approve MCP tool call?".to_string(),
+                requested_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "confirmed": { "type": "boolean" }
+                    },
+                }),
+            },
+        },
+        &cancel_token,
+    )
+    .await;
+
+    let submission = timeout(Duration::from_secs(2), rx_sub.recv())
+        .await
+        .expect("elicitation response timed out")
+        .expect("elicitation response missing");
+    assert_eq!(
+        submission.op,
+        Op::ResolveElicitation {
+            server_name: "code-review-graph".to_string(),
+            request_id: child_request_id,
+            decision: codex_protocol::approvals::ElicitationAction::Decline,
+            content: None,
+            meta: Some(serde_json::json!({
+                codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY:
+                    ApprovalsReviewer::AutoReview,
+            })),
+        }
+    );
+}
+
+#[tokio::test]
+async fn delegated_mcp_elicitation_without_guardian_round_trips_through_parent() {
+    let (parent_session, parent_ctx, rx_events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+
+    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_child_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let codex = Codex {
+        tx_sub,
+        rx_event: rx_child_events,
+        agent_status,
+        session: Arc::clone(&parent_session),
+        session_loop_termination: completed_session_loop_termination(),
+    };
+    let cancel_token = CancellationToken::new();
+
+    let handle = tokio::spawn({
+        let parent_session = Arc::clone(&parent_session);
+        let parent_ctx = Arc::clone(&parent_ctx);
+        let cancel_token = cancel_token.clone();
+        async move {
+            handle_elicitation_request(
+                &codex,
+                &parent_session,
+                &parent_ctx,
+                ElicitationRequestEvent {
+                    turn_id: Some("child-turn-1".to_string()),
+                    server_name: "custom_server".to_string(),
+                    id: codex_protocol::mcp::RequestId::String("child-request-1".to_string()),
+                    request: codex_protocol::approvals::ElicitationRequest::Form {
+                        meta: None,
+                        message: "Need more information".to_string(),
+                        requested_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" }
+                            },
+                        }),
+                    },
+                },
+                &cancel_token,
+            )
+            .await;
+        }
+    });
+
+    let parent_event = timeout(Duration::from_secs(2), rx_events.recv())
+        .await
+        .expect("parent elicitation event timed out")
+        .expect("parent elicitation event missing");
+    let EventMsg::ElicitationRequest(parent_request) = parent_event.msg else {
+        panic!("expected parent elicitation request");
+    };
+    assert_eq!(parent_request.server_name, "custom_server");
+    let parent_request_id = parent_request.id.clone();
+    assert_ne!(
+        parent_request_id,
+        codex_protocol::mcp::RequestId::String("child-request-1".to_string())
+    );
+    let parent_request_id = match parent_request_id {
+        codex_protocol::mcp::RequestId::String(value) => {
+            rmcp::model::NumberOrString::String(value.into())
+        }
+        codex_protocol::mcp::RequestId::Integer(value) => {
+            rmcp::model::NumberOrString::Number(value)
+        }
+    };
+
+    parent_session
+        .resolve_elicitation(
+            "custom_server".to_string(),
+            parent_request_id,
+            ElicitationResponse {
+                action: ElicitationAction::Accept,
+                content: Some(serde_json::json!({ "answer": "ok" })),
+                meta: None,
+            },
+        )
+        .await
+        .expect("resolve parent elicitation");
+    timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("delegated elicitation handler timed out")
+        .expect("delegated elicitation handler panicked");
+
+    let submission = timeout(Duration::from_secs(2), rx_sub.recv())
+        .await
+        .expect("child elicitation response timed out")
+        .expect("child elicitation response missing");
+    assert_eq!(
+        submission.op,
+        Op::ResolveElicitation {
+            server_name: "custom_server".to_string(),
+            request_id: codex_protocol::mcp::RequestId::String("child-request-1".to_string()),
+            decision: codex_protocol::approvals::ElicitationAction::Accept,
+            content: Some(serde_json::json!({ "answer": "ok" })),
+            meta: None,
+        }
+    );
+}
