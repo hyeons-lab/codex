@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 use rmcp::model::BooleanSchema;
 use rmcp::model::ElicitationSchema;
 use rmcp::model::PrimitiveSchema;
@@ -159,6 +160,29 @@ fn guardian_elicitation_review_request_requires_opt_in() {
         "codex_approval_kind": "mcp_tool_call",
         "tool_name": "access_browser_origin",
     })));
+
+    assert_eq!(
+        guardian_elicitation_review_request(&request),
+        GuardianElicitationReview::NotRequested
+    );
+}
+
+#[test]
+fn guardian_elicitation_review_request_ignores_unrelated_meta_with_form_schema() {
+    let request = ElicitationReviewRequest {
+        server_name: "browser-use".to_string(),
+        request_id: rmcp::model::NumberOrString::Number(10),
+        elicitation: CreateElicitationRequestParams::FormElicitationParams {
+            meta: meta(json!({
+                "unrelated": true,
+            })),
+            message: "Choose an option".to_string(),
+            requested_schema: ElicitationSchema::builder()
+                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .build()
+                .expect("schema should build"),
+        },
+    };
 
     assert_eq!(
         guardian_elicitation_review_request(&request),

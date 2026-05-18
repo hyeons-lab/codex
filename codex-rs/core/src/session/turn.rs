@@ -1668,24 +1668,38 @@ async fn drain_in_flight(
     turn_context: Arc<TurnContext>,
 ) -> CodexResult<()> {
     while let Some(res) = in_flight.next().await {
-        match res {
-            Ok(response_input) => {
-                let response_item = response_input.into();
-                sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
-                    .await;
-                mark_thread_memory_mode_polluted_if_external_context(
-                    sess.as_ref(),
-                    turn_context.as_ref(),
-                    &response_item,
-                )
-                .await;
-            }
-            Err(err) => {
-                error_or_panic(format!("in-flight tool future failed during drain: {err}"));
-            }
-        }
+        record_in_flight_result(res, sess.as_ref(), turn_context.as_ref()).await;
     }
     Ok(())
+}
+
+async fn record_in_flight_result(
+    res: CodexResult<ResponseInputItem>,
+    sess: &Session,
+    turn_context: &TurnContext,
+) {
+    match res {
+        Ok(response_input) => {
+            let response_item = response_input.into();
+            sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
+                .await;
+            mark_thread_memory_mode_polluted_if_external_context(
+                sess,
+                turn_context,
+                &response_item,
+            )
+            .await;
+        }
+        Err(err) => {
+            error_or_panic(format!("in-flight tool future failed during drain: {err}"));
+        }
+    }
+}
+
+enum StreamOrToolEvent {
+    Stream(Option<CodexResult<ResponseEvent>>),
+    Tool(Option<CodexResult<ResponseInputItem>>),
+    Cancelled,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1754,6 +1768,8 @@ async fn try_run_sampling_request(
     let mut active_item_is_streaming_to_client = false;
     let receiving_span = trace_span!("receiving_stream");
     let mut completed_response_id: Option<String> = None;
+    let tool_result_can_continue_before_completed =
+        stream.tool_result_can_continue_before_completed;
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
@@ -1769,14 +1785,35 @@ async fn try_run_sampling_request(
             codex.usage.total_tokens = field::Empty,
         );
 
-        let event = match stream
-            .next()
-            .instrument(trace_span!(parent: &handle_responses, "receiving"))
-            .or_cancel(&cancellation_token)
-            .await
-        {
-            Ok(event) => event,
-            Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
+        let event = tokio::select! {
+            biased;
+
+            _ = cancellation_token.cancelled() => StreamOrToolEvent::Cancelled,
+            event = stream
+                .next()
+                .instrument(trace_span!(parent: &handle_responses, "receiving")) => {
+                    StreamOrToolEvent::Stream(event)
+                }
+            res = async {
+                if in_flight.is_empty() || !tool_result_can_continue_before_completed {
+                    futures::future::pending().await
+                } else {
+                    in_flight.next().await
+                }
+            } => StreamOrToolEvent::Tool(res),
+        };
+
+        let event = match event {
+            StreamOrToolEvent::Cancelled => break Err(CodexErr::TurnAborted),
+            StreamOrToolEvent::Tool(Some(res)) => {
+                record_in_flight_result(res, sess.as_ref(), turn_context.as_ref()).await;
+                break Ok(SamplingRequestResult {
+                    needs_follow_up: true,
+                    last_agent_message,
+                });
+            }
+            StreamOrToolEvent::Tool(None) => continue,
+            StreamOrToolEvent::Stream(event) => event,
         };
 
         let event = match event {
@@ -1875,7 +1912,12 @@ async fn try_run_sampling_request(
                         Err(err) => break Err(err),
                     };
                 if let Some(tool_future) = output_result.tool_future {
-                    in_flight.push_back(tool_future);
+                    let handle = tokio::spawn(tool_future);
+                    in_flight.push_back(Box::pin(async move {
+                        handle.await.map_err(|err| {
+                            CodexErr::Fatal(format!("tool task failed to join: {err}"))
+                        })?
+                    }));
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
                     last_agent_message = Some(agent_message);
@@ -2138,6 +2180,8 @@ async fn try_run_sampling_request(
         &mut assistant_message_stream_parsers,
     )
     .await;
+
+    drop(stream);
 
     if sess
         .features

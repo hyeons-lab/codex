@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub const WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY: &str = "ws_request_header_traceparent";
 pub const WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY: &str = "ws_request_header_tracestate";
@@ -300,6 +301,12 @@ pub struct ResponseStream {
     pub rx_event: mpsc::Receiver<Result<ResponseEvent, ApiError>>,
     /// Server-assigned `x-request-id` response header, when present.
     pub upstream_request_id: Option<String>,
+    /// Whether this transport can continue a client-tool turn without first
+    /// receiving `response.completed` from the active provider stream.
+    pub tool_result_can_continue_before_completed: bool,
+    /// Signals the transport task that the consumer stopped polling before the
+    /// provider stream reached its own terminal event.
+    pub consumer_dropped: CancellationToken,
 }
 
 impl Stream for ResponseStream {
@@ -307,5 +314,11 @@ impl Stream for ResponseStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.rx_event.poll_recv(cx)
+    }
+}
+
+impl Drop for ResponseStream {
+    fn drop(&mut self) {
+        self.consumer_dropped.cancel();
     }
 }

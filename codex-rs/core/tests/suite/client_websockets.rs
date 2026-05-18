@@ -1137,6 +1137,7 @@ async fn responses_websocket_emits_reasoning_included_event() {
         requests: vec![vec![ev_response_created("resp-1"), ev_completed("resp-1")]],
         response_headers: vec![("X-Reasoning-Included".to_string(), "true".to_string())],
         accept_delay: None,
+        response_event_delay: None,
         close_after_requests: true,
     }])
     .await;
@@ -1211,6 +1212,7 @@ async fn responses_websocket_emits_rate_limit_events() {
             ("X-Reasoning-Included".to_string(), "true".to_string()),
         ],
         accept_delay: None,
+        response_event_delay: None,
         close_after_requests: true,
     }])
     .await;
@@ -1951,6 +1953,7 @@ async fn responses_websocket_v2_surfaces_terminal_error_without_close_handshake(
         ],
         response_headers: Vec::new(),
         accept_delay: None,
+        response_event_delay: None,
         close_after_requests: false,
     }])
     .await;

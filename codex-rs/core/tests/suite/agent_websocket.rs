@@ -139,6 +139,7 @@ async fn websocket_first_turn_handles_handshake_delay_with_startup_prewarm() -> 
         response_headers: Vec::new(),
         // Delay handshake so turn processing must tolerate websocket startup latency.
         accept_delay: Some(Duration::from_millis(150)),
+        response_event_delay: None,
         close_after_requests: true,
     }])
     .await;
@@ -249,6 +250,69 @@ async fn websocket_v2_test_codex_shell_chain() -> Result<()> {
     assert_eq!(
         handshake.header("openai-beta"),
         Some(WS_V2_BETA_HEADER_VALUE.to_string())
+    );
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_v2_tool_call_continues_when_stream_omits_completed() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let call_id = "shell-command-call";
+    let server = start_websocket_server(vec![
+        vec![
+            vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+            vec![
+                ev_response_created("resp-1"),
+                ev_shell_command_call(call_id, "echo websocket"),
+            ],
+        ],
+        vec![vec![
+            ev_response_created("resp-2"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]],
+    ])
+    .await;
+
+    let mut builder = test_codex().with_windows_cmd_shell().with_config(|config| {
+        config
+            .features
+            .enable(Feature::ResponsesWebsocketsV2)
+            .expect("test config should allow feature update");
+    });
+
+    let test = builder.build_with_websocket_server(&server).await?;
+    test.submit_turn_with_policy("run the echo command", test.config.legacy_sandbox_policy())
+        .await?;
+
+    assert_eq!(server.handshakes().len(), 2);
+
+    let connections = server.connections();
+    let first_connection = connections.first().expect("missing first connection");
+    assert_eq!(first_connection.len(), 2);
+    let second_connection = connections.get(1).expect("missing second connection");
+    assert_eq!(second_connection.len(), 1);
+
+    let follow_up = second_connection
+        .first()
+        .expect("missing follow-up request")
+        .body_json();
+    assert_eq!(follow_up["type"].as_str(), Some("response.create"));
+
+    let create_items = follow_up
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("response.create input array");
+    let output_item = create_items
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call_output"))
+        .expect("function_call_output in create");
+    assert_eq!(
+        output_item.get("call_id").and_then(Value::as_str),
+        Some(call_id)
     );
 
     server.shutdown().await;

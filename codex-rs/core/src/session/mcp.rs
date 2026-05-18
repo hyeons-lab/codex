@@ -511,6 +511,9 @@ fn guardian_elicitation_review_request(
     let Some(meta) = meta.as_ref().map(|meta| &meta.0) else {
         return GuardianElicitationReview::NotRequested;
     };
+    if !meta_map_requests_approval_request(meta) {
+        return GuardianElicitationReview::NotRequested;
+    }
     if requested_schema.is_some_and(|schema| !schema.properties.is_empty()) {
         return GuardianElicitationReview::Decline(
             "guardian MCP elicitation review only supports empty form schemas",
@@ -578,7 +581,14 @@ pub(crate) fn guardian_mcp_tool_call_request_from_elicitation_meta(
 
 fn meta_requests_approval_request(meta: &Option<Meta>) -> bool {
     meta.as_ref()
-        .and_then(|meta| metadata_str(&meta.0, MCP_ELICITATION_REQUEST_TYPE_KEY))
+        .is_some_and(|meta| meta_map_requests_approval_request(&meta.0))
+}
+
+// Mirrored for delegated subagents by
+// `codex_delegate::delegated_elicitation_meta_requests_approval`, which operates on
+// the `serde_json` form of the same metadata; keep the two in sync.
+fn meta_map_requests_approval_request(meta: &Map<String, Value>) -> bool {
+    metadata_str(meta, MCP_ELICITATION_REQUEST_TYPE_KEY)
         == Some(MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST)
 }
 

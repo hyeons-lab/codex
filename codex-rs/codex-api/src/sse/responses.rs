@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::trace;
 
@@ -82,6 +83,8 @@ pub fn spawn_response_stream(
     ResponseStream {
         rx_event,
         upstream_request_id,
+        tool_result_can_continue_before_completed: false,
+        consumer_dropped: CancellationToken::new(),
     }
 }
 

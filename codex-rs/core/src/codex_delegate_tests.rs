@@ -604,10 +604,19 @@ async fn delegated_mcp_elicitation_guardian_declines_non_empty_schema() {
 }
 
 #[tokio::test]
-async fn delegated_mcp_elicitation_without_guardian_round_trips_through_parent() {
+async fn delegated_mcp_elicitation_with_unrelated_meta_round_trips_through_parent() {
     let (parent_session, parent_ctx, rx_events) =
         crate::session::tests::make_session_and_context_with_rx().await;
     *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
+    let mut parent_ctx = Arc::try_unwrap(parent_ctx).expect("single turn context ref");
+    let mut config = (*parent_ctx.config).clone();
+    config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    parent_ctx.config = Arc::new(config);
+    parent_ctx
+        .approval_policy
+        .set(AskForApproval::OnRequest)
+        .expect("set on-request policy");
+    let parent_ctx = Arc::new(parent_ctx);
 
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_child_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -635,7 +644,9 @@ async fn delegated_mcp_elicitation_without_guardian_round_trips_through_parent()
                     server_name: "custom_server".to_string(),
                     id: codex_protocol::mcp::RequestId::String("child-request-1".to_string()),
                     request: codex_protocol::approvals::ElicitationRequest::Form {
-                        meta: None,
+                        meta: Some(serde_json::json!({
+                            "unrelated": true,
+                        })),
                         message: "Need more information".to_string(),
                         requested_schema: serde_json::json!({
                             "type": "object",

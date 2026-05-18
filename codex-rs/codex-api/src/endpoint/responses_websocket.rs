@@ -36,6 +36,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::debug;
@@ -262,6 +263,8 @@ impl ResponsesWebsocketConnection {
         let request_body = serde_json::to_value(&request).map_err(|err| {
             ApiError::Stream(format!("failed to encode websocket request: {err}"))
         })?;
+        let consumer_dropped = CancellationToken::new();
+        let consumer_dropped_for_stream = consumer_dropped.clone();
 
         let current_span = Span::current();
         tokio::spawn(
@@ -299,6 +302,7 @@ impl ResponsesWebsocketConnection {
                         idle_timeout,
                         telemetry,
                         connection_reused,
+                        consumer_dropped,
                     )
                     .await
                 };
@@ -318,6 +322,8 @@ impl ResponsesWebsocketConnection {
         Ok(ResponseStream {
             rx_event,
             upstream_request_id: None,
+            tool_result_can_continue_before_completed: true,
+            consumer_dropped: consumer_dropped_for_stream,
         })
     }
 }
@@ -666,6 +672,7 @@ async fn run_websocket_response_stream(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
+    consumer_dropped: CancellationToken,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     send_websocket_request(
@@ -679,9 +686,14 @@ async fn run_websocket_response_stream(
 
     loop {
         let poll_start = Instant::now();
-        let response = tokio::time::timeout(idle_timeout, ws_stream.next())
-            .await
-            .map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()));
+        let response = tokio::select! {
+            _ = consumer_dropped.cancelled() => {
+                return Err(ApiError::Stream("response stream consumer dropped".into()));
+            }
+            response = tokio::time::timeout(idle_timeout, ws_stream.next()) => {
+                response.map_err(|_| ApiError::Stream("idle timeout waiting for websocket".into()))
+            }
+        };
         if let Some(t) = telemetry.as_ref() {
             t.on_ws_event(&response, poll_start.elapsed());
         }

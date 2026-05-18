@@ -552,6 +552,7 @@ mod tests {
         drop(tx_event);
         ResponseStream {
             rx_event,
+            tool_result_can_continue_before_completed: false,
             consumer_dropped: CancellationToken::new(),
         }
     }

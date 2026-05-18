@@ -449,6 +449,8 @@ pub struct WebSocketConnectionConfig {
     /// Tests use this to force websocket setup into an in-flight state so first-turn warmup paths
     /// can be exercised deterministically.
     pub accept_delay: Option<Duration>,
+    /// Optional delay inserted after each websocket response event.
+    pub response_event_delay: Option<Duration>,
     /// Whether the server should send a websocket close frame after all scripted responses.
     ///
     /// Tests can disable this to simulate a peer that surfaces a terminal event but never
@@ -1202,6 +1204,7 @@ pub async fn start_websocket_server(connections: Vec<Vec<Vec<Value>>>) -> WebSoc
             requests,
             response_headers: Vec::new(),
             accept_delay: None,
+            response_event_delay: None,
             close_after_requests: true,
         })
         .collect();
@@ -1356,6 +1359,9 @@ pub async fn start_websocket_server_with_headers(
                     };
                     if ws_stream.send(Message::Text(payload.into())).await.is_err() {
                         break;
+                    }
+                    if let Some(delay) = connection.response_event_delay {
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }

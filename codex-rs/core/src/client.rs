@@ -1747,19 +1747,15 @@ fn map_response_stream(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
-    let codex_api::ResponseStream {
-        rx_event,
-        upstream_request_id,
-    } = api_stream;
-    let api_stream = codex_api::ResponseStream {
-        rx_event,
-        upstream_request_id: None,
-    };
+    let upstream_request_id = api_stream.upstream_request_id.clone();
+    let tool_result_can_continue_before_completed =
+        api_stream.tool_result_can_continue_before_completed;
     map_response_events(
         upstream_request_id,
         api_stream,
         session_telemetry,
         inference_trace_attempt,
+        tool_result_can_continue_before_completed,
     )
 }
 
@@ -1768,6 +1764,7 @@ fn map_response_events<S>(
     api_stream: S,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
+    tool_result_can_continue_before_completed: bool,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -1904,6 +1901,7 @@ where
     (
         ResponseStream {
             rx_event,
+            tool_result_can_continue_before_completed,
             consumer_dropped: consumer_dropped_for_stream,
         },
         rx_last_response,

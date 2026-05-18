@@ -493,6 +493,7 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
         ],
         response_headers: Vec::new(),
         accept_delay: Some(sideband_accept_delay),
+        response_event_delay: None,
         close_after_requests: false,
     }])
     .await;
@@ -663,6 +664,7 @@ async fn conversation_webrtc_close_while_sideband_connecting_drops_pending_join(
         requests: vec![vec![]],
         response_headers: Vec::new(),
         accept_delay: Some(Duration::from_millis(500)),
+        response_event_delay: None,
         close_after_requests: false,
     }])
     .await;

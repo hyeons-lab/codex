@@ -756,6 +756,16 @@ async fn maybe_auto_review_mcp_request_user_input(
     })
 }
 
+/// Handle an MCP elicitation from the delegate by consulting the parent session
+/// (Guardian auto-review or the parent UI) and replying to the child.
+///
+/// Every path must submit an `Op::ResolveElicitation` back to the child `codex`:
+/// guardian decisions, parse failures, parent responses, and cancellation all
+/// resolve it (cancellation/`None` map to `Cancel`). Leaving any path unresolved
+/// reintroduces the `/review`-with-MCP hang this function exists to fix. Like the
+/// sibling approval handlers it is awaited inline, so the delegate event loop is
+/// intentionally paused until the elicitation resolves; cancellation safety is
+/// provided by `await_elicitation_with_cancel`/`await_approval_with_cancel`.
 async fn handle_elicitation_request(
     codex: &Codex,
     parent_session: &Arc<Session>,
@@ -893,6 +903,9 @@ fn delegated_mcp_elicitation_guardian_review(
         }
     };
     let meta = meta.as_ref()?.as_object()?;
+    if !delegated_elicitation_meta_requests_approval(meta) {
+        return Some(GuardianElicitationReview::NotRequested);
+    }
     if requested_schema.is_some_and(delegated_elicitation_schema_has_properties) {
         return Some(GuardianElicitationReview::Decline(
             "guardian MCP elicitation review only supports empty form schemas",
@@ -905,6 +918,8 @@ fn delegated_mcp_elicitation_guardian_review(
     ))
 }
 
+// JSON-representation equivalent of the `!schema.properties.is_empty()` check in
+// `session::mcp::guardian_elicitation_review_request`; keep the two consistent.
 fn delegated_elicitation_schema_has_properties(schema: &Value) -> bool {
     schema
         .get("properties")
@@ -912,6 +927,10 @@ fn delegated_elicitation_schema_has_properties(schema: &Value) -> bool {
         .is_some_and(|properties| !properties.is_empty())
 }
 
+// Mirror of `session::mcp::meta_map_requests_approval_request`, operating on the
+// `serde_json` representation carried by delegated protocol events rather than the
+// `rmcp` `Meta` type. Both key off the same `mcp_approval_meta` constants; keep the
+// two in sync if the approval-request detection logic changes.
 fn delegated_elicitation_meta_requests_approval(meta: &serde_json::Map<String, Value>) -> bool {
     meta.get(codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY)
         .and_then(Value::as_str)
