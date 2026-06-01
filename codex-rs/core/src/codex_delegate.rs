@@ -811,8 +811,14 @@ async fn handle_elicitation_request(
             server_name: event.server_name.clone(),
             request,
         };
+        let parent_request_id = request_id.clone();
         await_elicitation_with_cancel(
-            parent_session.request_mcp_server_elicitation(parent_ctx, request_id.clone(), params),
+            async move {
+                parent_session
+                    .request_mcp_server_elicitation(parent_ctx, parent_request_id, params)
+                    .await
+                    .response
+            },
             Some(parent_session),
             &event.server_name,
             request_id,
